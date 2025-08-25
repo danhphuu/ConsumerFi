@@ -1,66 +1,102 @@
 import requests
 import time
+import os
 
 url_base = "https://p2a-gateway.up.railway.app"
+log_file = "quest_log.txt"
 
 # Hàm nhận phần thưởng
 def claim(headers):
     url = f"{url_base}/api/v1/compute-units/user/interval-rewards/claim"
     response = requests.post(url, headers=headers)
-    
+
+    if response.status_code == 401:
+        print("⚠️ Token hết hạn hoặc không hợp lệ.")
+        return False
+
     if response.status_code == 200:
         data = response.json()
         if data.get("success", False):
-            print("Checkin thành công:")
+            print("✅ Checkin thành công!")
+            return True
         else:
-            print("Checkin thất bại:")
+            print("❌ Checkin thất bại:", data)
+            return False
     else:
-        print("Không thể nhận thưởng:", response.status_code, response.text)
+        print("⚠️ Không thể nhận thưởng:", response.status_code, response.text)
+        return False
 
-# Danh sách các câu hỏi cần làm nhiệm vụ
-question_list = [
-    {"questionId": "cmel5sklx02sfo83xx8vs5snf", "thumbsUp": True},
-    {"questionId": "cmel5se7702reo83xi1vofov5", "thumbsUp": True},
-    {"questionId": "cmel5r5yu02nto83x582u70yk", "thumbsUp": True},
-    {"questionId": "cmel5qx2602noo83xesoh5nkn", "thumbsUp": True},
-    {"questionId": "cmel658p003kro83xl0hy9sha", "thumbsUp": True},
-    {"questionId": "cmel64qc203k3o83xm8x6ib9y", "thumbsUp": True},
-    {"questionId": "cmel64c9q015umg3x7f3muc5z", "thumbsUp": True},
-    {"questionId": "cmel63yby03ioo83x3d2bvjuc", "thumbsUp": True},
-    {"questionId": "cmel62xg403gno83xbtpfm55o", "thumbsUp": True},
-    {"questionId": "cmel62j7z03g2o83xdyc8i4sk", "thumbsUp": True},
-]
+# Lấy questId tự động từ API hoặc từ file log
+def load_quests(headers):
+    if os.path.exists(log_file):
+        with open(log_file, "r") as f:
+            quests = [{"questionId": line.strip(), "thumbsUp": True} for line in f if line.strip()]
+        print(f"📌 Đã load {len(quests)} questId từ file log.")
+        return quests
 
-# Hàm làm nhiệm vụ (trả lời câu hỏi bằng cách bấm Like/Dislike)
+    url = f"{url_base}/api/v1/quest/user/thumbs-questions/daily"
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 401:
+            print("⚠️ Token hết hạn hoặc không hợp lệ (khi lấy quest).")
+            return []
+        if response.status_code == 200:
+            data = response.json()
+            quests = []
+            questions = data.get("data", {}).get("questions", [])
+            with open(log_file, "w") as f_log:
+                for q in questions:
+                    questionId = q.get("id")
+                    if questionId:
+                        quests.append({"questionId": questionId, "thumbsUp": True})
+                        f_log.write(questionId + "\n")
+            print(f"📌 Lấy {len(quests)} questId từ API và lưu vào file log.")
+            return quests
+        else:
+            print("⚠️ Không lấy được quest từ API:", response.status_code, response.text)
+            return []
+    except Exception as e:
+        print("❌ Lỗi khi gọi API quest:", e)
+        return []
+
+# Hàm làm nhiệm vụ
 def task(headers, questionId, thumbsUp):
     url = f"{url_base}/api/v1/quest/user/thumbs-questions/answer"
-    payload = {
-        "questionId": questionId,
-        "thumbsUp": thumbsUp
-    }
+    payload = {"questionId": questionId, "thumbsUp": thumbsUp}
     response = requests.post(url, headers=headers, json=payload)
-    data = response.json()
-    if response.status_code == 200 and response.json().get("success", False):
-        print(f"Nhiệm vụ cho câu hỏi {questionId} hoàn thành thành công.")
-    else:
-        error_message = data.get( "Lỗi không xác định")
-        print(f"{error_message}")
 
-# Hàm xử lý cho một token (1 tài khoản)
+    if response.status_code == 401:
+        print(f"⚠️ Token hết hạn khi làm nhiệm vụ {questionId}.")
+        return
+
+    data = response.json()
+    if response.status_code == 200 and data.get("success", False):
+        print(f"🎯 Nhiệm vụ {questionId} hoàn thành.")
+    else:
+        print(f"❌ Lỗi khi làm nhiệm vụ {questionId}: {data}")
+
+# Chạy cho 1 token
 def chay_cho_mot_token(token, idx):
     headers = {
-        "Authorization": "Bearer " + token.strip(),  # Thêm "Bearer" tự động
+        "Authorization": "Bearer " + token.strip(),
         "Content-Type": "application/json"
-    }  
+    }
     print(f"\n🔑 Đang chạy cho tài khoản {idx+1}...")
-    # Nhận thưởng
-    claim(headers)
-    
-    # Thực hiện các nhiệm vụ trong danh sách câu hỏi
-    for question in question_list:
-        task(headers, question["questionId"], question["thumbsUp"])
 
-# Hàm chính, chạy cho nhiều token từ file tokens.json
+    # Nhận thưởng
+    if not claim(headers):
+        print(f"⏩ Bỏ qua tài khoản {idx+1} do token không hợp lệ.")
+        return
+
+    # Lấy questId từ file log hoặc API
+    quests = load_quests(headers)
+
+    # Thực hiện nhiệm vụ với delay 4s mỗi quest
+    for q in quests:
+        task(headers, q["questionId"], q["thumbsUp"])
+        time.sleep(4)
+
+# Hàm chính
 def main():
     with open("tokens.json", "r") as f:
         tokens = f.readlines()
@@ -68,18 +104,18 @@ def main():
     for idx, token in enumerate(tokens):
         try:
             chay_cho_mot_token(token, idx)
-            time.sleep(3)  # nghỉ 3 giây giữa các tài khoản (tùy chọn)
+            time.sleep(3)  # nghỉ 3s giữa các account
         except Exception as e:
             print(f"⚠️  Lỗi với token {idx+1}: {e}")
 
-# Chạy chương trình chính
+# Run
 if __name__ == "__main__":
     try:
         while True:
             main()
-            print("\n✅ Hoàn thành cho tất cả tài khoản, chờ 24 giờ trước khi chạy lại...")
-            time.sleep(60 * 60 * 24)  # chờ 24 giờ
+            print("\n✅ Hoàn thành tất cả tài khoản, chờ 24h trước khi chạy lại...")
+            time.sleep(60 * 60 * 24)
     except KeyboardInterrupt:
-        print("⏹️ Chương trình đã bị dừng bởi người dùng.")
+        print("⏹️ Dừng bởi người dùng.")
     except Exception as e:
-        print(f"❌ Đã xảy ra lỗi: {e}")
+        print(f"❌ Lỗi: {e}")
